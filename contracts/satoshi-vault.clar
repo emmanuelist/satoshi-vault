@@ -419,3 +419,81 @@
 (define-private (get-block-timestamp)
   (default-to u0 (get-stacks-block-info? time (- stacks-block-height u1)))
 )
+
+;; Update global interest accrual for yield distribution
+(define-private (refresh-protocol-interest)
+  (let (
+      (current-timestamp (get-block-timestamp))
+      (last-update_time (var-get interest-accrual-checkpoint))
+    )
+    (if (and (> current-timestamp last-update_time) (> (var-get global-stx-liquidity) u0))
+      (let (
+          (elapsed-time (- current-timestamp last-update_time))
+          (outstanding-borrows (var-get global-stx-borrowed))
+          (total-liquidity (var-get global-stx-liquidity))
+          (interest-generated (* (* outstanding-borrows INTEREST_RATE_ANNUAL)
+            (/ elapsed-time SECONDS_IN_YEAR)
+          ))
+          (yield-per-stx-token (/ (* interest-generated PRECISION_BASIS_POINTS) total-liquidity))
+        )
+        ;; Update global state
+        (var-set interest-accrual-checkpoint current-timestamp)
+        (var-set lender-yield-accumulator
+          (+ (var-get lender-yield-accumulator) yield-per-stx-token)
+        )
+        true
+      )
+      true
+    )
+  )
+)
+
+;; PUBLIC QUERY INTERFACE
+
+;; Get user's total sBTC collateral balance  
+(define-read-only (query-user-collateral (account principal))
+  (default-to u0
+    (get sbtc-deposited (map-get? borrower-collateral-ledger { user: account }))
+  )
+)
+
+;; Get user's STX liquidity provision balance
+(define-read-only (query-user-liquidity-deposits (account principal))
+  (default-to u0
+    (get stx-deposited (map-get? lender-position-ledger { user: account }))
+  )
+)
+
+;; Get user's outstanding borrowed STX amount
+(define-read-only (query-user-borrowed-amount (account principal))
+  (default-to u0
+    (get stx-borrowed (map-get? borrower-debt-ledger { user: account }))
+  )
+)
+
+;; Calculate user's position health factor
+(define-read-only (query-position-health-factor (account principal))
+  (let (
+      (collateral-sbtc (query-user-collateral account))
+      (total-debt (unwrap! (compute-total-debt account) (ok u0)))
+      (market-price (unwrap! (fetch-sbtc-market-price) (ok u0)))
+      (collateral-value (* collateral-sbtc market-price))
+    )
+    (if (is-eq total-debt u0)
+      (ok u999999) ;; Extremely healthy with no debt
+      (ok (/ (* collateral-value u100) total-debt))
+    )
+  )
+)
+
+;; Get comprehensive protocol metrics and statistics
+(define-read-only (query-protocol-analytics)
+  {
+    total-sbtc-collateral: (var-get global-sbtc-collateral),
+    total-stx-liquidity: (var-get global-stx-liquidity),
+    total-stx-borrowed: (var-get global-stx-borrowed),
+    current-yield-index: (var-get lender-yield-accumulator),
+    sbtc-market-price: (var-get sbtc-to-stx-exchange-rate),
+    protocol-active: (var-get protocol-operations-enabled),
+  }
+)

@@ -210,3 +210,109 @@
     )
   )
 )
+
+;; Calculate accumulated yield for a specific lender
+(define-read-only (calculate-earned-yield (lender principal))
+  (let (
+      (position-data (map-get? lender-position-ledger { user: lender }))
+      (entry-yield-index (default-to u0 (get yield-index-entry position-data)))
+      (stx-principal (default-to u0 (get stx-deposited position-data)))
+      (current-yield-index (var-get lender-yield-accumulator))
+    )
+    (if (> current-yield-index entry-yield-index)
+      (let ((yield-growth (- current-yield-index entry-yield-index)))
+        (ok (/ (* stx-principal yield-growth) PRECISION_BASIS_POINTS))
+      )
+      (ok u0)
+    )
+  )
+)
+
+;; COLLATERALIZED BORROWING SYSTEM
+
+;; Deposit sBTC collateral and borrow STX in single atomic operation
+(define-public (open-collateralized-position
+    (sbtc-collateral-amount uint)
+    (stx-borrow-request uint)
+  )
+  (let (
+      (borrower tx-sender)
+      (existing-collateral (map-get? borrower-collateral-ledger { user: borrower }))
+      (current-collateral (default-to u0 (get sbtc-deposited existing-collateral)))
+      (total-collateral (+ current-collateral sbtc-collateral-amount))
+      (market-price (unwrap! (fetch-sbtc-market-price) (err ERR_PRICE_ORACLE_FAILURE)))
+      (collateral-stx-value (* total-collateral market-price))
+      (maximum-borrowable (/ (* collateral-stx-value MAX_LOAN_TO_VALUE_RATIO) u100))
+      (existing-debt (map-get? borrower-debt-ledger { user: borrower }))
+      (current-debt (unwrap! (compute-total-debt borrower) (err ERR_EXTERNAL_CONTRACT_ERROR)))
+      (projected-total-debt (+ current-debt stx-borrow-request))
+    )
+    ;; Comprehensive validation and safety checks
+    (asserts! (var-get protocol-operations-enabled) (err ERR_UNAUTHORIZED_ACCESS))
+    (asserts! (> sbtc-collateral-amount u0) (err ERR_ZERO_VALUE_OPERATION))
+    (asserts! (> stx-borrow-request u0) (err ERR_ZERO_VALUE_OPERATION))
+    (asserts! (<= projected-total-debt maximum-borrowable)
+      (err ERR_BORROW_LIMIT_EXCEEDED)
+    )
+
+    ;; Refresh interest calculations
+    (refresh-protocol-interest)
+
+    ;; Update borrower's debt position
+    (map-set borrower-debt-ledger { user: borrower } {
+      stx-borrowed: projected-total-debt,
+      interest-checkpoint: (get-block-timestamp),
+    })
+
+    ;; Track global borrowed amount
+    (var-set global-stx-borrowed
+      (+ (var-get global-stx-borrowed) stx-borrow-request)
+    )
+
+    ;; Update collateral position
+    (map-set borrower-collateral-ledger { user: borrower } { sbtc-deposited: total-collateral })
+
+    ;; Track global collateral
+    (var-set global-sbtc-collateral
+      (+ (var-get global-sbtc-collateral) sbtc-collateral-amount)
+    )
+
+    ;; Transfer borrowed STX to borrower
+    (try! (as-contract (stx-transfer? stx-borrow-request tx-sender borrower)))
+
+    (ok true)
+  )
+)
+
+;; Repay outstanding debt and optionally retrieve collateral
+(define-public (repay-outstanding-debt (repayment-amount uint))
+  (let (
+      (borrower tx-sender)
+      (debt-position (unwrap! (map-get? borrower-debt-ledger { user: borrower })
+        (err ERR_INSUFFICIENT_FUNDS)
+      ))
+      (principal-borrowed (get stx-borrowed debt-position))
+      (total-debt-owed (unwrap! (compute-total-debt borrower) (err ERR_EXTERNAL_CONTRACT_ERROR)))
+      (collateral-position (map-get? borrower-collateral-ledger { user: borrower }))
+      (collateral-sbtc (default-to u0 (get sbtc-deposited collateral-position)))
+    )
+    ;; Input validation
+    (asserts! (var-get protocol-operations-enabled) (err ERR_UNAUTHORIZED_ACCESS))
+    (asserts! (> repayment-amount u0) (err ERR_ZERO_VALUE_OPERATION))
+
+    ;; Update interest calculations
+    (refresh-protocol-interest)
+
+    ;; Process STX repayment from borrower
+    (try! (stx-transfer? repayment-amount borrower (as-contract tx-sender)))
+
+    ;; Calculate remaining debt after repayment
+    (let ((remaining-debt (if (>= repayment-amount total-debt-owed)
+        u0
+        (- total-debt-owed repayment-amount)
+      )))
+      (if (is-eq remaining-debt u0)
+        (begin
+          ;; Complete debt repayment - clear all positions
+          (map-delete borrower-collateral-ledger { user: borrower })
+          (map-delete borrower-debt-ledger { user: borrower })

@@ -102,3 +102,111 @@
     (ok true)
   )
 )
+
+;; PROTOCOL ADMINISTRATION
+
+(define-public (emergency-pause-protocol)
+  (begin
+    (asserts! (is-eq tx-sender PROTOCOL_ADMIN) (err ERR_UNAUTHORIZED_ACCESS))
+    (var-set protocol-operations-enabled false)
+    (ok true)
+  )
+)
+
+(define-public (resume-protocol-operations)
+  (begin
+    (asserts! (is-eq tx-sender PROTOCOL_ADMIN) (err ERR_UNAUTHORIZED_ACCESS))
+    (var-set protocol-operations-enabled true)
+    (ok true)
+  )
+)
+
+;; LIQUIDITY PROVISION (LENDING)
+
+;; Deposit STX to earn competitive yields from borrower interest payments
+(define-public (provide-stx-liquidity (deposit-amount uint))
+  (let (
+      (depositor tx-sender)
+      (existing-position (map-get? lender-position-ledger { user: depositor }))
+      (current-stx-balance (default-to u0 (get stx-deposited existing-position)))
+    )
+    ;; Comprehensive input validation
+    (asserts! (var-get protocol-operations-enabled) (err ERR_UNAUTHORIZED_ACCESS))
+    (asserts! (> deposit-amount u0) (err ERR_ZERO_VALUE_OPERATION))
+
+    ;; Refresh interest calculations before processing
+    (refresh-protocol-interest)
+
+    ;; Execute STX transfer from depositor to protocol
+    (try! (stx-transfer? deposit-amount depositor (as-contract tx-sender)))
+
+    ;; Update depositor's position with new funds
+    (map-set lender-position-ledger { user: depositor } {
+      stx-deposited: (+ current-stx-balance deposit-amount),
+      yield-index-entry: (var-get lender-yield-accumulator),
+    })
+
+    ;; Update global liquidity tracking
+    (var-set global-stx-liquidity
+      (+ (var-get global-stx-liquidity) deposit-amount)
+    )
+
+    (ok true)
+  )
+)
+
+;; Withdraw deposited STX plus accumulated yield rewards
+(define-public (withdraw-stx-liquidity (withdrawal-amount uint))
+  (let (
+      (withdrawer tx-sender)
+      (position-data (unwrap! (map-get? lender-position-ledger { user: withdrawer })
+        (err ERR_INSUFFICIENT_FUNDS)
+      ))
+      (deposited-principal (get stx-deposited position-data))
+      (accrued-yield (unwrap! (calculate-earned-yield withdrawer)
+        (err ERR_EXTERNAL_CONTRACT_ERROR)
+      ))
+      (total-withdrawable (+ deposited-principal accrued-yield))
+      (actual-withdrawal (if (> withdrawal-amount total-withdrawable)
+        total-withdrawable
+        withdrawal-amount
+      ))
+    )
+    ;; Input validation and safety checks
+    (asserts! (var-get protocol-operations-enabled) (err ERR_UNAUTHORIZED_ACCESS))
+    (asserts! (> withdrawal-amount u0) (err ERR_ZERO_VALUE_OPERATION))
+    (asserts! (>= total-withdrawable withdrawal-amount)
+      (err ERR_INVALID_WITHDRAWAL)
+    )
+
+    ;; Update interest before withdrawal processing
+    (refresh-protocol-interest)
+
+    ;; Calculate remaining position after withdrawal
+    (let ((remaining-principal (if (>= deposited-principal withdrawal-amount)
+        (- deposited-principal withdrawal-amount)
+        u0
+      )))
+      ;; Update or remove position based on remaining balance
+      (if (is-eq remaining-principal u0)
+        (map-delete lender-position-ledger { user: withdrawer })
+        (map-set lender-position-ledger { user: withdrawer } {
+          stx-deposited: remaining-principal,
+          yield-index-entry: (var-get lender-yield-accumulator),
+        })
+      )
+
+      ;; Adjust global liquidity tracking
+      (var-set global-stx-liquidity
+        (if (>= (var-get global-stx-liquidity) withdrawal-amount)
+          (- (var-get global-stx-liquidity) withdrawal-amount)
+          u0
+        ))
+
+      ;; Execute STX transfer to withdrawer
+      (try! (as-contract (stx-transfer? actual-withdrawal tx-sender withdrawer)))
+
+      (ok true)
+    )
+  )
+)

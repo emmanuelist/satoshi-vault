@@ -316,3 +316,106 @@
           ;; Complete debt repayment - clear all positions
           (map-delete borrower-collateral-ledger { user: borrower })
           (map-delete borrower-debt-ledger { user: borrower })
+
+          ;; Update global tracking variables
+          (var-set global-sbtc-collateral
+            (if (>= (var-get global-sbtc-collateral) collateral-sbtc)
+              (- (var-get global-sbtc-collateral) collateral-sbtc)
+              u0
+            ))
+          (var-set global-stx-borrowed
+            (if (>= (var-get global-stx-borrowed) principal-borrowed)
+              (- (var-get global-stx-borrowed) principal-borrowed)
+              u0
+            ))
+
+          (ok true)
+        )
+        (begin
+          ;; Partial repayment - update debt position only
+          (map-set borrower-debt-ledger { user: borrower } {
+            stx-borrowed: remaining-debt,
+            interest-checkpoint: (get-block-timestamp),
+          })
+
+          (ok true)
+        )
+      )
+    )
+  )
+)
+
+;; Calculate total debt including accrued interest
+(define-read-only (compute-total-debt (borrower principal))
+  (let (
+      (debt-position (map-get? borrower-debt-ledger { user: borrower }))
+      (principal-amount (default-to u0 (get stx-borrowed debt-position)))
+      (last-interest-update (default-to u0 (get interest-checkpoint debt-position)))
+      (current-time (get-block-timestamp))
+    )
+    (if (and (> principal-amount u0) (> current-time last-interest-update))
+      (let (
+          (time-duration (- current-time last-interest-update))
+          (annual-rate-per_second (/ INTEREST_RATE_ANNUAL SECONDS_IN_YEAR))
+          (compound_factor (+ u100 (/ (* annual-rate-per_second time-duration) u100)))
+          (total-debt-with-interest (/ (* principal-amount compound_factor) u100))
+        )
+        (ok total-debt-with-interest)
+      )
+      (ok principal-amount)
+    )
+  )
+)
+
+;; LIQUIDATION & RISK MANAGEMENT
+
+;; Execute liquidation of unhealthy positions
+(define-public (execute-liquidation (target-borrower principal))
+  (let (
+      (borrower-debt (unwrap! (compute-total-debt target-borrower)
+        (err ERR_EXTERNAL_CONTRACT_ERROR)
+      ))
+      (collateral-record (unwrap! (map-get? borrower-collateral-ledger { user: target-borrower })
+        (err ERR_POSITION_SAFE_FROM_LIQUIDATION)
+      ))
+      (collateral-sbtc (get sbtc-deposited collateral-record))
+      (market-price (unwrap! (fetch-sbtc-market-price) (err ERR_PRICE_ORACLE_FAILURE)))
+      (collateral-stx_value (* collateral-sbtc market-price))
+      (liquidation-trigger (* borrower-debt LIQUIDATION_THRESHOLD))
+      (liquidator-bonus (/ (* collateral-sbtc LIQUIDATION_BONUS) u100))
+    )
+    ;; Refresh interest before liquidation
+    (refresh-protocol-interest)
+
+    ;; Validate liquidation eligibility
+    (asserts! (> borrower-debt u0) (err ERR_POSITION_SAFE_FROM_LIQUIDATION))
+    (asserts! (<= (* collateral-stx_value u100) liquidation-trigger)
+      (err ERR_POSITION_SAFE_FROM_LIQUIDATION)
+    )
+
+    ;; Update global state tracking
+    (var-set global-sbtc-collateral
+      (if (>= (var-get global-sbtc-collateral) collateral-sbtc)
+        (- (var-get global-sbtc-collateral) collateral-sbtc)
+        u0
+      ))
+    (var-set global-stx-borrowed
+      (if (>= (var-get global-stx-borrowed) borrower-debt)
+        (- (var-get global-stx-borrowed) borrower-debt)
+        u0
+      ))
+
+    ;; Clear liquidated positions
+    (map-delete borrower-debt-ledger { user: target-borrower })
+    (map-delete borrower-collateral-ledger { user: target-borrower })
+
+    (ok true)
+  )
+)
+
+;; PROTOCOL UTILITY FUNCTIONS
+
+;; Get current blockchain timestamp
+(define-private (get-block-timestamp)
+  (default-to u0 (get-stacks-block-info? time (- stacks-block-height u1)))
+)

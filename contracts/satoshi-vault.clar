@@ -138,9 +138,12 @@
     (refresh-protocol-interest)
 
     ;; Execute STX transfer from depositor to protocol
-    (unwrap! (as-contract? ((with-stx deposit-amount))
-      (stx-transfer? deposit-amount depositor tx-sender)
-    ) (err ERR_ZERO_VALUE_OPERATION))
+    (try! (as-contract? ((with-stx deposit-amount))
+      (begin
+        (try! (stx-transfer? deposit-amount depositor tx-sender))
+        true
+      )
+    ))
 
     ;; Update depositor's position with new funds
     (map-set lender-position-ledger { user: depositor } {
@@ -206,9 +209,12 @@
         ))
 
       ;; Execute STX transfer to withdrawer
-      (unwrap! (as-contract? ((with-stx actual-withdrawal))
-        (stx-transfer? actual-withdrawal tx-sender withdrawer)
-      ) (err ERR_ZERO_VALUE_OPERATION))
+      (try! (as-contract? ((with-stx actual-withdrawal))
+        (begin
+          (try! (stx-transfer? actual-withdrawal tx-sender withdrawer))
+          true
+        )
+      ))
 
       (ok true)
     )
@@ -282,9 +288,12 @@
     )
 
     ;; Transfer borrowed STX to borrower
-    (unwrap! (as-contract? ((with-stx stx-borrow-request))
-      (stx-transfer? stx-borrow-request tx-sender borrower)
-    ) (err ERR_ZERO_VALUE_OPERATION))
+    (try! (as-contract? ((with-stx stx-borrow-request))
+      (begin
+        (try! (stx-transfer? stx-borrow-request tx-sender borrower))
+        true
+      )
+    ))
 
     (ok true)
   )
@@ -310,9 +319,12 @@
     (refresh-protocol-interest)
 
     ;; Process STX repayment from borrower
-    (unwrap! (as-contract? ((with-stx repayment-amount))
-      (stx-transfer? repayment-amount borrower tx-sender)
-    ) (err ERR_ZERO_VALUE_OPERATION))
+    (try! (as-contract? ((with-stx repayment-amount))
+      (begin
+        (try! (stx-transfer? repayment-amount borrower tx-sender))
+        true
+      )
+    ))
 
     ;; Calculate remaining debt after repayment
     (let ((remaining-debt (if (>= repayment-amount total-debt-owed)

@@ -138,7 +138,7 @@
     (refresh-protocol-interest)
 
     ;; Execute STX transfer from depositor to protocol
-    (try! (stx-transfer? deposit-amount depositor (as-contract tx-sender)))
+    (try! (stx-transfer? deposit-amount depositor (as-contract? tx-sender)))
 
     ;; Update depositor's position with new funds
     (map-set lender-position-ledger { user: depositor } {
@@ -204,7 +204,7 @@
         ))
 
       ;; Execute STX transfer to withdrawer
-      (try! (as-contract (stx-transfer? actual-withdrawal tx-sender withdrawer)))
+      (try! (as-contract? (stx-transfer? actual-withdrawal tx-sender withdrawer)))
 
       (ok true)
     )
@@ -278,7 +278,7 @@
     )
 
     ;; Transfer borrowed STX to borrower
-    (try! (as-contract (stx-transfer? stx-borrow-request tx-sender borrower)))
+    (try! (as-contract? (stx-transfer? stx-borrow-request tx-sender borrower)))
 
     (ok true)
   )
@@ -304,7 +304,7 @@
     (refresh-protocol-interest)
 
     ;; Process STX repayment from borrower
-    (try! (stx-transfer? repayment-amount borrower (as-contract tx-sender)))
+    (try! (stx-transfer? repayment-amount borrower (as-contract? tx-sender)))
 
     ;; Calculate remaining debt after repayment
     (let ((remaining-debt (if (>= repayment-amount total-debt-owed)

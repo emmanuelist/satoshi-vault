@@ -6,6 +6,8 @@
 
 SatoshiVault represents the next evolution of Bitcoin DeFi, creating a trustless lending ecosystem where Bitcoin holders can unlock capital without selling their BTC exposure. Through sophisticated sBTC collateralization mechanics, users access STX liquidity while maintaining Bitcoin position integrity. The protocol features dynamic yield optimization, automated risk management, and capital-efficient liquidation systems designed specifically for Bitcoin's volatile yet appreciating asset characteristics.
 
+**✨ Clarity 4 Upgrade**: This contract has been migrated to Clarity 4 (activated November 18, 2025 at Bitcoin block 923222) with enhanced security features including the new `as-contract?` function with explicit asset allowances.
+
 ## Key Features
 
 - **sBTC Collateralized Lending**: Deposit sBTC as collateral to borrow STX
@@ -191,7 +193,7 @@ borrower-debt-ledger        ; Debt positions with interest
 
 ### Prerequisites
 
-- [Clarinet](https://github.com/hirosystems/clarinet) - Stacks development environment
+- [Clarinet](https://github.com/hirosystems/clarinet) - Stacks development environment (Clarity 4 compatible)
 - Node.js & npm - For testing framework
 
 ### Setup
@@ -209,6 +211,28 @@ clarinet check
 
 # Run tests
 npm test
+```
+
+### Clarity 4 Migration Notes
+
+This contract has been upgraded from Clarity 1-3 to Clarity 4. Key changes include:
+
+- **`as-contract?` Migration**: Replaced all `as-contract` calls with `as-contract?` which now requires explicit asset allowances
+- **Asset Allowances**: All contract-initiated transfers now use `(with-stx amount)` allowances for enhanced security
+- **Response Handling**: Updated to handle the new `(response A uint)` return type from `as-contract?`
+
+Example of the new pattern:
+```clarity
+;; Old Clarity 1-3 syntax
+(try! (stx-transfer? amount sender (as-contract tx-sender)))
+
+;; New Clarity 4 syntax
+(try! (as-contract? ((with-stx amount))
+  (begin
+    (try! (stx-transfer? amount sender tx-sender))
+    true
+  )
+))
 ```
 
 ### Testing
@@ -231,6 +255,7 @@ clarinet fmt --in-place
 3. **Liquidation Timing**: Race conditions possible during high volatility
 4. **Admin Controls**: Centralized price updates and emergency controls
 5. **Integer Overflow**: All arithmetic operations use safe math practices
+6. **Clarity 4 Asset Allowances**: Enhanced security with explicit asset allowances in `as-contract?` - all transfers now explicitly declare maximum amounts that can be moved
 
 ## Risk Factors
 
@@ -242,6 +267,7 @@ clarinet fmt --in-place
 
 ## Roadmap
 
+- [x] Clarity 4 upgrade with enhanced security features
 - [ ] Decentralized price oracle integration
 - [ ] Multi-collateral support (STX, other tokens)
 - [ ] Variable interest rates based on utilization
